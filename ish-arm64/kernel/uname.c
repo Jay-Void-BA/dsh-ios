@@ -16,22 +16,27 @@ const char *uname_hostname_override = NULL;
 
 void do_uname(struct uname *uts) {
     struct utsname real_uname;
-    uname(&real_uname);
-    const char *hostname = real_uname.nodename;
+    memset(&real_uname, 0, sizeof(real_uname));
+    const char *hostname = "dsh";
+    if (uname(&real_uname) == 0 && real_uname.nodename[0] != '\0')
+        hostname = real_uname.nodename;
     if (uname_hostname_override)
         hostname = uname_hostname_override;
 
+    // The guest's fields are UNAME_LENGTH bytes, while the host's nodename can
+    // be longer (or unset). Copy with the destination bound: a plain strcpy
+    // trips _FORTIFY_SOURCE and crashes the emulator on a long host name.
     memset(uts, 0, sizeof(struct uname));
-    strcpy(uts->system, "Linux");
-    strcpy(uts->hostname, hostname);
-    strcpy(uts->release, "4.20.69-ish");
+    snprintf(uts->system, sizeof(uts->system), "%s", "Linux");
+    snprintf(uts->hostname, sizeof(uts->hostname), "%s", hostname);
+    snprintf(uts->release, sizeof(uts->release), "%s", "4.20.69-ish");
     snprintf(uts->version, sizeof(uts->version), "%s %s %s", uname_version, __DATE__, __TIME__);
 #if defined(GUEST_ARM64)
-    strcpy(uts->arch, "aarch64");
+    snprintf(uts->arch, sizeof(uts->arch), "%s", "aarch64");
 #else
-    strcpy(uts->arch, "i686");
+    snprintf(uts->arch, sizeof(uts->arch), "%s", "i686");
 #endif
-    strcpy(uts->domain, "(none)");
+    snprintf(uts->domain, sizeof(uts->domain), "%s", "(none)");
 }
 
 dword_t sys_uname(addr_t uts_addr) {

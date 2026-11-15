@@ -61,6 +61,8 @@ jobs:
       - name: Check the runner
         run: |
           uname -m
+          hostname
+          uname -v
           test "$(uname -m)" = arm64 || {
             echo "::error::the emulator's gadgets are arm64 assembly; this needs an Apple Silicon runner"
             exit 1
