@@ -1,0 +1,10 @@
+{
+  "version": "1.0.17",
+  "build": 19,
+  "commit": "5af37ae057cc03864fcf30066aa1faefb238acdb",
+  "ipa_sha256": "ea0ae01892ce78df70d31a958fbcddbff2aa6f3e6247292075b82fe7096824b0",
+  "ipa_size": " 97M",
+  "distribution": "unsigned",
+  "xcode": "Xcode 26.6",
+  "built_at": "2026-11-15T09:44:31Z"
+}
