@@ -40,8 +40,19 @@ mkdir -p "$WORK" "$(dirname "$ALPINE_TARBALL")"
 if [ ! -f "$WORK/fakefs/meta.db" ] || [ ! -f "$WORK/.gcc-ready" ]; then
     echo "== preparing gcc fakefs (one-off)"
     rm -rf "$WORK/fakefs" "$WORK/.gcc-ready"
-    "$ISH_BUILD/tools/fakefsify" "$ALPINE_TARBALL" "$WORK/fakefs"
-    guest 'echo nameserver 8.8.8.8 > /etc/resolv.conf; apk add --no-progress gcc musl-dev >/dev/null 2>&1 && echo gcc-ok' | grep -q gcc-ok && touch "$WORK/.gcc-ready"
+    "$ISH_BUILD/tools/fakefsify" "$ALPINE_TARBALL" "$WORK/fakefs" || {
+        echo "fakefsify failed on $ALPINE_TARBALL" >&2
+        exit 2
+    }
+    # Keep the guest's own words: when apk cannot reach the network, the old
+    # silent redirect turned that into a bare "could not install gcc".
+    if ! guest 'echo nameserver 8.8.8.8 > /etc/resolv.conf; cat /etc/alpine-release 2>/dev/null; uname -m; apk add --no-progress gcc musl-dev 2>&1 && echo gcc-ok' \
+            | tee "$WORK/gcc-install.log" | grep gcc-ok >/dev/null; then
+        echo "could not install gcc in the guest; guest output:" >&2
+        tail -30 "$WORK/gcc-install.log" >&2
+        exit 2
+    fi
+    touch "$WORK/.gcc-ready"
 fi
 [ -f "$WORK/.gcc-ready" ] || { echo "could not install gcc in the guest"; exit 2; }
 
