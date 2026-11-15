@@ -27,8 +27,9 @@
 
 > **Project status:** DSHIOS is an experimental project. Although it can run on
 > iPhone and iPad through iSH-ARM64, performance is still quite limited. The
-> project will not be submitted to the App Store or receive further releases.
-> If you would like to try it, please download the source and build it yourself.
+> project is not submitted to the App Store; CI publishes unsigned IPAs for
+> sideloading ([Releases](https://github.com/Jay-Void-BA/dsh-ios/releases)), and
+> you can always download the source and build it yourself.
 
 DSHIOS is a native iOS app that embeds the [iSH-ARM64](ish-arm64) userspace Linux
 emulator, boots a bundled Alpine Linux image with Node.js 22 and
@@ -80,7 +81,7 @@ stock dsh web UI.</sub>
 
 ## Quick start
 
-**Prerequisites:** macOS on Apple Silicon, Xcode 27, iOS/iPadOS 16 or later, `brew install meson ninja lld`.
+**Prerequisites:** macOS on Apple Silicon, Xcode 27, iOS/iPadOS 16 or later, `brew install meson ninja lld libarchive`.
 (`ld.lld` builds the guest VDSO; without it the guest cannot run),
 Node.js ≥ 20 + npm, the `xcodeproj` Ruby gem (`gem install xcodeproj`, or
 CocoaPods), an Apple developer team for device signing.
@@ -108,6 +109,19 @@ make run TEAM=XXXXXXXXXX DEVICE=<udid>   # build, sign, install, launch on the i
 First launch imports the guest image (~30 s, progress on the overlay); later
 launches take a few seconds. Configure a DeepSeek API key in the harness when
 prompted; it is stored with the harness settings in the guest.
+
+## Releases
+
+GitHub Actions builds the app on an Apple Silicon runner:
+**Actions ▸ release ▸ Run workflow** (patch / minor / major / build-only).
+
+The job builds the emulator and the Alpine guest image, runs the emulator and
+guest-image suites, packages an **unsigned** `.ipa`, bumps
+`app/AppDSH.xcconfig`, tags `v<version>-build<build>` and publishes a GitHub
+release. An unsigned IPA installs through self-signing tools (SideStore,
+AltStore, Sideloadly); it cannot go to TestFlight, because the runner has no
+Apple signing identity. For that, run `make release` on a Mac with
+`APPLE_ID`, `APPLE_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` set.
 
 ## How it works
 
@@ -174,7 +188,9 @@ Status: all suites green (`make test`: 3 emulator + 37 rootfs + 114 app + 6 UI c
 unit + guest-integration tests also run on the iPad Air, where a report test
 prints what each capability actually returned — counts and shapes, never values). Everything runs locally — the build
 needs an Apple Silicon Mac with Xcode, an emulator toolchain and (for the
-device suites) a connected iPhone or iPad, so there is no hosted CI.
+device suites) a connected iPhone or iPad. The `release` workflow does run on a
+hosted Apple Silicon runner, but that build is unsigned and skips the test
+suites unless you ask for them.
 
 ## Project layout
 

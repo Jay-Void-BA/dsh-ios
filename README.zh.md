@@ -26,8 +26,8 @@
 </p>
 
 > **项目状态：** DSHIOS 是一个实验性质的项目。虽然可以通过 iSH-ARM64 在
-> iPhone 和 iPad 上运行，但目前性能仍然比较有限。本项目后续不会提交至 App Store，
-> 也不会继续发布新版本。如需体验，请自行下载源码并构建运行。
+> iPhone 和 iPad 上运行，但目前性能仍然比较有限。本项目不提交至 App Store；
+> CI 会发布供自签名安装的未签名 IPA（见 Releases），也可以自行下载源码构建。
 
 DSH 是一个原生 iOS app：它内嵌 [iSH-ARM64](ish-arm64) 用户态 Linux 模拟器，启动内置的
 Alpine Linux 镜像（含 Node.js 22 和 `@deepseek-ai/dsh`），托管 `dsh web` 进程，并在
@@ -66,7 +66,7 @@ Alpine Linux 镜像（含 Node.js 22 和 `@deepseek-ai/dsh`），托管 `dsh web
 
 ## 快速开始
 
-**环境要求：** Apple Silicon 的 macOS，Xcode 27，iOS/iPadOS 16 或更高版本，`brew install meson ninja lld`。
+**环境要求：** Apple Silicon 的 macOS，Xcode 27，iOS/iPadOS 16 或更高版本，`brew install meson ninja lld libarchive`。
 （`ld.lld` 用于构建 guest 的 VDSO，缺少它 guest 无法运行），Node.js ≥ 20 + npm，
 `xcodeproj` Ruby gem（`gem install xcodeproj`，或随 CocoaPods 一起），以及一个 Apple 开发者团队用于真机签名。
 
@@ -85,6 +85,12 @@ make run TEAM=XXXXXXXXXX DEVICE=<udid>   # 构建、签名、安装、启动到 
 
 首次启动会导入 guest 镜像（约 30 秒，启动页有进度），之后启动只需几秒。首次使用模型时，
 请按 harness 的提示配置 DeepSeek API key；它会随 harness 设置保存在 guest 中。
+
+## 发布
+
+GitHub Actions 在 Apple Silicon 运行器上构建：**Actions ▸ release ▸ Run workflow**（patch / minor / major / build-only）。
+
+任务会构建模拟器与 Alpine guest 镜像、跑模拟器与 guest 镜像测试、打包**未签名**的 `.ipa`、递增 `app/AppDSH.xcconfig`、打 `v<版本>-build<构建号>` tag 并发布 GitHub Release。未签名 IPA 可用于 SideStore、AltStore、Sideloadly 等自签名工具；因为运行器没有 Apple 签名证书，无法上传 TestFlight。需要 TestFlight 时，在 Mac 上配置 `APPLE_ID`、`APPLE_SPECIFIC_PASSWORD`、`APPLE_TEAM_ID` 后执行 `make release`。
 
 ## 工作原理
 
@@ -140,7 +146,7 @@ make test-device        # 再加 UI 测试（需先在 iPad 设置 ▸ 开发者
 | `DSHTests`（XCTest，宿主在 app 内） | 端口分配、日志环、就绪探测、监督器状态机（假 launcher + 本地 HTTP 服务器）；host bridge 的认证/能力开关/限流；guest 集成：真实服务响应、`dsh-selftest`、node/dsh 版本、镜像簿记、**用 app 内 mock 模型跑完整一轮 agent 对话并通过 bridge 调用 `device_info`** | 模拟器 / 真机 |
 | `DSHUITests`（XCUITest） | 启动到 DeepSeek Harness 界面、状态栏端口、服务日志页、终端页、横屏布局 | 模拟器 / 真机 |
 
-现状：全部通过（`make test`：3 + 16 + 32 + 4 项；iPad Air 真机 32/32 单元 + guest 集成测试）。测试都在本地跑：构建需要 Apple Silicon Mac + Xcode + 模拟器工具链，真机套件还需要连着 iPhone / iPad，因此没有托管 CI。
+现状：全部通过（`make test`：3 + 16 + 32 + 4 项；iPad Air 真机 32/32 单元 + guest 集成测试）。测试都在本地跑：构建需要 Apple Silicon Mac + Xcode + 模拟器工具链，真机套件还需要连着 iPhone / iPad。`release` 流水线在托管的 Apple Silicon 运行器上构建未签名 IPA，测试仍默认在本地跑。
 
 ## 目录结构
 
