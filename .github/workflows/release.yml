@@ -1,0 +1,282 @@
+# Builds DSHIOS on GitHub's Apple Silicon macOS runner and publishes the
+# result as a GitHub Release.
+#
+#   Actions ▸ release ▸ Run workflow
+#
+# The IPA is **unsigned**: this repository has no Apple signing identity, so the
+# build cannot upload to TestFlight or the App Store. The artifact is meant for
+# self-signing installers (SideStore, AltStore, Sideloadly, TrollStore). To sign
+# and upload from a Mac instead, run `make release` (scripts/release.sh).
+#
+# The version bump, the `v<version>-build<build>` tag and the `releases/*.json`
+# receipt follow the same convention as scripts/release.sh, so local releases
+# and CI releases share one numbering sequence.
+
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major, build-only]
+        default: patch
+      build_number:
+        description: Build number (empty = next after every recorded one)
+        type: string
+        required: false
+      simulator_tests:
+        description: Also run XCTest/XCUITest on a simulator
+        type: boolean
+        default: false
+      draft:
+        description: Create the GitHub release as a draft
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build DSHIOS and publish the IPA
+    runs-on: macos-latest
+    timeout-minutes: 300
+    env:
+      INPUT_BUMP: ${{ inputs.bump }}
+      INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
+      INPUT_SIMULATOR_TESTS: ${{ inputs.simulator_tests }}
+      INPUT_DRAFT: ${{ inputs.draft }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Check the runner
+        run: |
+          uname -m
+          test "$(uname -m)" = arm64 || {
+            echo "::error::the emulator's gadgets are arm64 assembly; this needs an Apple Silicon runner"
+            exit 1
+          }
+          xcodebuild -version
+          sw_vers
+          df -h /
+
+      - name: Free disk space
+        run: |
+          # The standard runner starts with ~14 GB free. Simulator runtimes are
+          # several gigabytes and an archive build does not need them; keep them
+          # only when the simulator suites are requested.
+          if [ "${INPUT_SIMULATOR_TESTS}" != "true" ]; then
+            sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/*
+          fi
+          sudo rm -rf "$HOME/Library/Developer/Xcode/DerivedData"
+          df -h /
+
+      - name: Install build tools
+        run: |
+          brew install meson ninja lld
+          command -v ld.lld
+          gem list -i xcodeproj >/dev/null || sudo gem install xcodeproj --no-document
+          node --version
+          npm --version
+
+      - name: Decide the release version
+        id: version
+        run: |
+          args=(--part "${INPUT_BUMP:-patch}")
+          if [ -n "${INPUT_BUILD_NUMBER}" ]; then
+            args+=(--build-number "$INPUT_BUILD_NUMBER")
+          fi
+          scripts/next-release.sh "${args[@]}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Bump the version
+        run: |
+          sed -i '' "s/^MARKETING_VERSION = .*/MARKETING_VERSION = ${{ steps.version.outputs.version }}/" app/AppDSH.xcconfig
+          sed -i '' "s/^CURRENT_PROJECT_VERSION = .*/CURRENT_PROJECT_VERSION = ${{ steps.version.outputs.build }}/" app/AppDSH.xcconfig
+          grep -E '^(MARKETING_VERSION|CURRENT_PROJECT_VERSION)' app/AppDSH.xcconfig
+
+      - name: Build the emulator
+        run: make emulator
+
+      - name: Emulator and build-script tests
+        run: make test-emu
+
+      - name: Build the guest image
+        run: make rootfs
+
+      - name: Guest image and host-bridge tests
+        run: make test-rootfs
+
+      - name: XCTest and XCUITest on the simulator
+        if: inputs.simulator_tests
+        run: make test-sim TEAM= SIM="$(scripts/pick-simulator.sh)"
+
+      - name: Archive the app (unsigned)
+        run: |
+          make project
+          xcodebuild -project DSH.xcodeproj -scheme DSH -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/DSH.xcarchive \
+            -quiet \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= DSH_DEVELOPMENT_TEAM= \
+            archive 2>&1 | tee build/xcodebuild.log
+
+      - name: Package the unsigned IPA
+        id: package
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          B="${{ steps.version.outputs.build }}"
+          app="build/DSH.xcarchive/Products/Applications/DSH.app"
+          test -d "$app" || { echo "::error::the archive produced no DSH.app"; exit 1; }
+
+          got_v=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")
+          got_b=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist")
+          if [ "$got_v" != "$V" ] || [ "$got_b" != "$B" ]; then
+            echo "::error::the archived app is ${got_v} (${got_b}), expected ${V} (${B})"
+            exit 1
+          fi
+
+          rm -rf build/ipa && mkdir -p build/ipa/Payload
+          ditto "$app" build/ipa/Payload/DSH.app
+          ipa="build/DSH-${V}-${B}-unsigned.ipa"
+          ( cd build/ipa && ditto -c -k --keepParent Payload "../$(basename "$ipa")" )
+          shasum -a 256 "$ipa" > "$ipa.sha256"
+          cat "$ipa.sha256"
+          du -h "$ipa"
+
+          printf 'ipa=%s\n' "$ipa" >> "$GITHUB_OUTPUT"
+
+      - name: Write the release manifest
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          B="${{ steps.version.outputs.build }}"
+          ipa="${{ steps.package.outputs.ipa }}"
+          cat > "releases/${V}-build${B}.json" <<JSON
+          {
+            "version": "${V}",
+            "build": ${B},
+            "commit": "${GITHUB_SHA}",
+            "ipa_sha256": "$(cut -d' ' -f1 "$ipa.sha256")",
+            "ipa_size": "$(du -h "$ipa" | cut -f1)",
+            "distribution": "unsigned",
+            "xcode": "$(xcodebuild -version | sed -n 1p)",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          JSON
+          cat "releases/${V}-build${B}.json"
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-ios-unsigned
+          path: |
+            build/*.ipa
+            build/*.sha256
+            releases/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Commit and tag the release
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          B="${{ steps.version.outputs.build }}"
+          TAG="${{ steps.version.outputs.tag }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/AppDSH.xcconfig DSH.xcodeproj "releases/${V}-build${B}.json"
+          git commit -m "Release ${V} (${B})"
+          git tag "$TAG"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "$TAG"
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.version.outputs.version }}"
+          B="${{ steps.version.outputs.build }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          ipa="${{ steps.package.outputs.ipa }}"
+          manifest="releases/${V}-build${B}.json"
+          sha=$(cut -d' ' -f1 "$ipa.sha256")
+          size=$(du -h "$ipa" | cut -f1)
+          dsh_version=$(node -p "require('./rootfs/staging/package.json').dependencies['@deepseek-ai/dsh']")
+          xcode=$(xcodebuild -version | sed -n 1p)
+
+          prev=$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)
+          if [ -n "$prev" ]; then
+            changes=$(git log --no-merges --pretty='- %s' -n 40 "${prev}..${GITHUB_SHA}")
+            range="Changes since ${prev}."
+          else
+            changes=$(git log --no-merges --pretty='- %s' -n 15 "${GITHUB_SHA}")
+            range="Recent changes."
+          fi
+
+          cat > build/release-notes.md <<EOF
+          DSH ${V} (build ${B}) — **unsigned** IPA.
+
+          This build is **not signed**, and it is not an App Store or TestFlight
+          upload. It ships as a plain .ipa for self-signing tools (SideStore,
+          AltStore, Sideloadly, TrollStore): re-sign it with your own Apple ID in
+          the tool before installing. HealthKit and the other capabilities only
+          work when your signing profile carries their entitlements.
+
+          ### Install
+          1. Download DSH-${V}-${B}-unsigned.ipa.
+          2. Add it to SideStore / AltStore / Sideloadly and sign it with your Apple ID.
+          3. Launch DSH; the first start imports the bundled Alpine guest image (~30 s).
+
+          ### This build
+          - source commit: ${GITHUB_SHA}
+          - ${xcode}
+          - IPA: DSH-${V}-${B}-unsigned.ipa (${size}), SHA-256 ${sha}
+          - guest: Alpine 3.21 + Node 22 + dsh ${dsh_version}, built by scripts/build-rootfs.sh
+          - tests: emulator suite + guest-image/host-bridge suite
+
+          ### ${range}
+          ${changes}
+          EOF
+
+          if [ "${INPUT_DRAFT}" = "true" ]; then
+            gh release create "$TAG" "$ipa" "$ipa.sha256" "$manifest" \
+              --verify-tag --draft \
+              --title "DSH ${V} (${B})" --notes-file build/release-notes.md
+          else
+            gh release create "$TAG" "$ipa" "$ipa.sha256" "$manifest" \
+              --verify-tag \
+              --title "DSH ${V} (${B})" --notes-file build/release-notes.md
+          fi
+
+          {
+            echo "### DSH ${V} (${B})"
+            echo ""
+            echo "- tag: ${TAG}"
+            echo "- IPA: ${size}, SHA-256 \`${sha}\`"
+            echo "- ${xcode}"
+            echo "- [release](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs
+          path: |
+            build/xcodebuild.log
+            build/*.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
