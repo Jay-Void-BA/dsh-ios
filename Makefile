@@ -38,6 +38,10 @@ emulator:
 	    exit 1; }
 	cd $(ISH_SRC) && { [ -d build-arm64-release ] || meson setup build-arm64-release -Dguest_arch=arm64 --buildtype=release; }
 	ninja -C $(ISH_BUILD)
+	@[ -x $(ISH_BUILD)/tools/fakefsify ] || { \
+	    echo "error: tools/fakefsify was not built — the guest image and the tests need it."; \
+	    echo "       meson only builds it when libarchive is found: brew install libarchive"; \
+	    exit 1; }
 
 rootfs: emulator
 	scripts/build-rootfs.sh

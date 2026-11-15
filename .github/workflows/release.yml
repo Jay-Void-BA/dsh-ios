@@ -82,7 +82,10 @@ jobs:
 
       - name: Install build tools
         run: |
-          brew install meson ninja lld
+          # libarchive is what builds tools/fakefsify, which the guest image
+          # and the emulator tests need; meson silently drops the tool when
+          # the dependency is missing.
+          brew install meson ninja lld libarchive
           command -v ld.lld
           gem list -i xcodeproj >/dev/null || sudo gem install xcodeproj --no-document
           node --version
